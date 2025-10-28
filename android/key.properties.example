@@ -1,0 +1,4 @@
+storeFile=/path/to/android-upload.jks
+storePassword="SOME_greate_PassHERE"
+keyPassword="SOME_greate_PassHERE"
+keyAlias=upload
