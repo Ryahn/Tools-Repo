@@ -16,7 +16,6 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 'stable'
           channel: 'stable'
 
       - name: Install dependencies
@@ -33,13 +32,8 @@ jobs:
           Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "rule7_app-windows.zip" -Force
 
       - name: Setup Inno Setup
-        uses: Amadevus/pwsh-script@v3
-        with:
-          script: |
-            $innosetupUrl = "https://jrsoftware.org/download.php/is.exe"
-            $innosetupInstaller = "$env:TEMP\innosetup.exe"
-            Invoke-WebRequest -Uri $innosetupUrl -OutFile $innosetupInstaller
-            Start-Process -FilePath $innosetupInstaller -ArgumentList "/SILENT /NORESTART /SUPPRESSMSGBOXES" -Wait
+        run: |
+          choco install innosetup -y --no-progress
 
       - name: Create Inno Setup script
         run: |
@@ -72,7 +66,28 @@ jobs:
 
       - name: Build installer
         run: |
-          $innosetupPath = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          # Try multiple possible paths for Inno Setup
+          $possiblePaths = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
+            "$env:ChocolateyInstall\lib\innosetup\tools\ISCC.exe"
+          )
+          $innosetupPath = $null
+          foreach ($path in $possiblePaths) {
+            if (Test-Path $path) {
+              $innosetupPath = $path
+              break
+            }
+          }
+          if (!$innosetupPath) {
+            # Try to find it in PATH
+            $innosetupPath = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
+          }
+          if (!$innosetupPath) {
+            Write-Error "Inno Setup compiler (ISCC.exe) not found"
+            exit 1
+          }
+          Write-Host "Using Inno Setup at: $innosetupPath"
           & $innosetupPath installer.iss
 
       - name: Upload Windows artifacts
@@ -94,7 +109,6 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 'stable'
           channel: 'stable'
 
       - name: Install dependencies
@@ -148,7 +162,6 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 'stable'
           channel: 'stable'
 
       - name: Install system dependencies
@@ -241,7 +254,6 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 'stable'
           channel: 'stable'
 
       - name: Install dependencies
