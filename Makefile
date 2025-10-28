@@ -36,7 +36,7 @@ help: ## Show this help message
 	}' $(MAKEFILE_LIST)
 	@printf "\nTip: pass \033[33mSERVICE=name\033[0m to scope restart/logs, e.g., \033[33mmake restart SERVICE=$(APP_SERVICE)\033[0m\n\n"
 
-.PHONY: help setup dev prod stop restart restart-all fresh build shell logs logs-app logs-mysql logs-redis cache-clear composer npm artisan schedule queue monitor run-schedule migrate migrate-fresh seed match-reports db-backup db-restore status health logs-size container-size cleanup-bloat clean clean-all fix-permissions flutter-fix-pods flutter-run flutter-run-profile flutter-build-macos flutter-build-android flutter-build-linux flutter-clean flutter-pub-get flutter-build-runner flutter-test ci download-release deploy-release-server
+.PHONY: help setup dev prod stop restart restart-all fresh build shell logs logs-app logs-mysql logs-redis cache-clear composer npm artisan schedule queue monitor run-schedule migrate migrate-fresh seed match-reports db-backup db-restore status health logs-size container-size cleanup-bloat clean clean-all fix-permissions flutter-fix-pods flutter-run flutter-run-profile flutter-build-macos flutter-build-android flutter-build-linux flutter-clean flutter-pub-get flutter-build-runner flutter-test ci download-release deploy-release-server release
 
 ##@ Permissions
 fix-permissions: ## Fix file permissions after Carbon Copy Cloner or similar backups
@@ -121,6 +121,64 @@ flutter-build-runner: ## Run code generation (json_serializable, freezed, etc.)
 
 flutter-test: ## Run Flutter tests
 	@flutter test
+
+##@ Git & Releases
+release: ## Create a new release: stage changes, bump version, commit, tag, and push
+	@bash -c '\
+	set -e; \
+	echo "🚀 Creating new release..."; \
+	if git diff --quiet HEAD && git diff --cached --quiet; then \
+		echo "⚠️  No changes to commit"; \
+		exit 1; \
+	fi; \
+	echo "📝 Staging all changed files..."; \
+	git add -A; \
+	echo ""; \
+	echo "📝 Enter commit message:"; \
+	read -r COMMIT_MSG; \
+	if [ -z "$$COMMIT_MSG" ]; then \
+		echo "❌ Error: Commit message cannot be empty"; \
+		exit 1; \
+	fi; \
+	echo ""; \
+	echo "📦 Reading current version from pubspec.yaml..."; \
+	CURRENT_VERSION=$$(grep "^version:" pubspec.yaml | sed "s/version: //" | tr -d " "); \
+	if [ -z "$$CURRENT_VERSION" ]; then \
+		echo "❌ Error: Could not read version from pubspec.yaml"; \
+		exit 1; \
+	fi; \
+	echo "   Current version: $$CURRENT_VERSION"; \
+	IFS="." read -r MAJOR MINOR PATCH <<< "$$CURRENT_VERSION"; \
+	if [ -z "$$PATCH" ]; then \
+		PATCH="0"; \
+	fi; \
+	NEW_PATCH=$$((PATCH + 1)); \
+	NEW_VERSION="$$MAJOR.$$MINOR.$$NEW_PATCH"; \
+	echo "   New version: $$NEW_VERSION"; \
+	echo ""; \
+	echo "🔄 Updating pubspec.yaml..."; \
+	if [[ "$$OSTYPE" == "darwin"* ]]; then \
+		sed -i "" "s/^version: .*/version: $$NEW_VERSION/" pubspec.yaml; \
+	else \
+		sed -i "s/^version: .*/version: $$NEW_VERSION/" pubspec.yaml; \
+	fi; \
+	git add pubspec.yaml; \
+	echo "✅ Version updated to $$NEW_VERSION"; \
+	echo ""; \
+	echo "💾 Committing changes..."; \
+	git commit -m "$$COMMIT_MSG" -m "Version bumped to $$NEW_VERSION"; \
+	echo "✅ Changes committed"; \
+	echo ""; \
+	echo "🏷️  Creating tag v$$NEW_VERSION..."; \
+	git tag -a "v$$NEW_VERSION" -m "Release version $$NEW_VERSION"; \
+	echo "✅ Tag created: v$$NEW_VERSION"; \
+	echo ""; \
+	echo "📤 Pushing to remote..."; \
+	git push origin main && git push origin "v$$NEW_VERSION"; \
+	echo ""; \
+	echo "✅ Release complete! Version $$NEW_VERSION has been pushed and tagged."; \
+	echo "🔄 GitHub Actions will now build the release for all platforms." \
+	'
 
 ##@ Release Deployment
 download-release: ## Download latest release from GitHub (usage: make download-release PLATFORM=all|windows|macos|linux|android DOWNLOAD_DIR=./releases)
