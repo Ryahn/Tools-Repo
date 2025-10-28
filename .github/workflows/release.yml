@@ -141,41 +141,57 @@ jobs:
           echo "Expected: CODE_SIGN_IDENTITY = Developer ID Application"
           echo "Expected: PROVISIONING_PROFILE_SPECIFIER = (empty or not set)"
 
+      - name: Scrub pbxproj for stray provisioning/profile keys
+        run: |
+          P=macos/Runner.xcodeproj/project.pbxproj
+          # Remove any lingering explicit provisioning refs
+          sed -i '' '/PROVISIONING_PROFILE[^_]/d' "$P" || true
+          sed -i '' 's/PROVISIONING_PROFILE_SPECIFIER = .*/PROVISIONING_PROFILE_SPECIFIER = "";/g' "$P" || true
+          # Ensure Developer ID everywhere
+          sed -i '' 's/"CODE_SIGN_IDENTITY\[sdk=macosx\*\]" = .*/"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";/g' "$P" || true
+          sed -i '' 's/CODE_SIGN_STYLE = .*/CODE_SIGN_STYLE = Manual;/g' "$P" || true
+          sed -i '' 's/DEVELOPMENT_TEAM = .*/DEVELOPMENT_TEAM = A54L5PGPNX;/g' "$P" || true
+          echo "✅ Project file scrubbed for stray provisioning references"
+
       - name: Import Developer ID cert (only if provided)
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
-          set -e
+          set -euo pipefail
           if [ -z "$CERTIFICATE_BASE64" ]; then
             echo "No certificate provided, skipping import"
             exit 0
           fi
           
-          CERT=$RUNNER_TEMP/cert.p12
-          KEYCHAIN=$RUNNER_TEMP/build.keychain-db
+          CERT="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
           echo "$CERTIFICATE_BASE64" | base64 --decode > "$CERT"
 
+          # Create + unlock temp keychain
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          # keep it unlocked for the job
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
-          # import p12 (must include PRIVATE KEY)
+          # Import Developer ID p12 (must include PRIVATE KEY)
           security import "$CERT" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
 
-          # add temp keychain to the user search list, do not drop login/system
-          EXISTING=$(security list-keychains -d user | sed 's/[" ]//g')
+          # Import WWDR G3 intermediate to the same keychain (trust chain)
+          curl -sL https://developer.apple.com/certificationauthority/AppleWWDRCAG3.cer -o "$RUNNER_TEMP/wwdr.cer"
+          security import "$RUNNER_TEMP/wwdr.cer" -k "$KEYCHAIN" -A -t cert || true
+
+          # Add temp keychain to search list without dropping existing ones
+          EXISTING=$(security list-keychains -d user | sed 's/[[:space:]"]//g' | tr '\n' ' ')
           security list-keychain -d user -s "$KEYCHAIN" $EXISTING
 
-          # make temp keychain the default so xcodebuild sees it
+          # Make temp keychain default so xcodebuild/codesign use it
           security default-keychain -s "$KEYCHAIN"
 
-          # allow codesign access
+          # Allow codesign non-interactive access
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
-      - name: Show signing identities (after import)
+      - name: Verify identity (after import)
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
         run: |
@@ -220,6 +236,23 @@ jobs:
               --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
             codesign -dv --verbose=4 "build/macos/Build/Products/Release/rule7_app.app" || true
           fi
+
+      - name: Explicit codesign (deep)
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+        run: |
+          if [ -z "$CERTIFICATE_BASE64" ]; then
+            echo "No certificate provided, skipping explicit codesign"
+            exit 0
+          fi
+          APP="build/macos/Build/Products/Release/rule7_app.app"
+          echo "🔐 Performing explicit deep codesign..."
+          codesign --force --deep --options runtime \
+            --entitlements "macos/Runner/Release.entitlements" \
+            --sign "Developer ID Application: Ryan Patrick Carr (A54L5PGPNX)" \
+            "$APP"
+          echo "✅ Codesign complete, verifying..."
+          codesign --verify --deep --strict --verbose=2 "$APP" || (spctl -a -vv "$APP" || true)
 
       - name: Zip app for notarization
         env:
