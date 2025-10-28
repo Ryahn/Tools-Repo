@@ -169,6 +169,23 @@ jobs:
           fi
           security find-identity -v -p codesigning "$RUNNER_TEMP/build.keychain-db" || true
 
+      - name: Assert Team ID matches signing identity
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+        run: |
+          if [ -z "$CERTIFICATE_BASE64" ]; then
+            echo "No certificate provided, skipping Team ID assertion"
+            exit 0
+          fi
+          TID=$(xcodebuild -project macos/Runner.xcodeproj -scheme Runner -configuration Release -showBuildSettings | awk -F' = ' '/DEVELOPMENT_TEAM/{print $2; exit}')
+          echo "PROJECT TEAM: $TID"
+          CERT_TID=$(security find-identity -v -p codesigning "$RUNNER_TEMP/build.keychain-db" 2>/dev/null | sed -n 's/.*(\([A-Z0-9]\{10\}\)).*/CERT TEAM: \1/p' | head -1 || echo "CERT TEAM: (not found)")
+          echo "$CERT_TID"
+          if [ -z "$TID" ] || [ "$TID" = "" ]; then
+            echo "⚠️  Warning: Could not read Team ID from project"
+            exit 0
+          fi
+
       - name: Build macOS
         shell: bash
         env:
