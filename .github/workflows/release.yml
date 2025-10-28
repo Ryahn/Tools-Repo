@@ -1,0 +1,266 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger on version tags like v1.0.0, v1.2.3, etc.
+
+jobs:
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 'stable'
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Windows release
+        run: |
+          flutter build windows --release `
+            --dart-define=API_BASE_URL=https://tools.zonies.xyz/api/mobile/v1 `
+            --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
+
+      - name: Create ZIP archive
+        run: |
+          Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "rule7_app-windows.zip" -Force
+
+      - name: Setup Inno Setup
+        uses: Amadevus/pwsh-script@v3
+        with:
+          script: |
+            $innosetupUrl = "https://jrsoftware.org/download.php/is.exe"
+            $innosetupInstaller = "$env:TEMP\innosetup.exe"
+            Invoke-WebRequest -Uri $innosetupUrl -OutFile $innosetupInstaller
+            Start-Process -FilePath $innosetupInstaller -ArgumentList "/SILENT /NORESTART /SUPPRESSMSGBOXES" -Wait
+
+      - name: Create Inno Setup script
+        run: |
+          $scriptContent = @"
+          [Setup]
+          AppName=Rule7
+          AppVersion=$env:GITHUB_REF_NAME
+          DefaultDirName={autopf}\Rule7
+          DefaultGroupName=Rule7
+          OutputBaseFilename=rule7_app-installer
+          OutputDir=.
+          Compression=lzma2
+          SolidCompression=yes
+          AppPublisher=Rule7
+          AppPublisherURL=https://tools.zonies.xyz
+          ArchitecturesAllowed=x64
+          ArchitecturesInstallIn64BitMode=x64
+
+          [Files]
+          Source: "build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: "{group}\Rule7"; Filename: "{app}\rule7_app.exe"
+          Name: "{autodesktop}\Rule7"; Filename: "{app}\rule7_app.exe"; Tasks: desktopicon
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a desktop icon"; GroupDescription: "Additional icons:"
+          "@
+          $scriptContent | Out-File -FilePath "installer.iss" -Encoding UTF8
+
+      - name: Build installer
+        run: |
+          $innosetupPath = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $innosetupPath installer.iss
+
+      - name: Upload Windows artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            rule7_app-windows.zip
+            rule7_app-installer.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-macos:
+    name: Build macOS
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 'stable'
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Fix CocoaPods permissions
+        run: |
+          find macos/Pods/Target\ Support\ Files -name "*.sh" -type f -exec chmod +x {} \; 2>/dev/null || true
+
+      - name: Build macOS release
+        run: |
+          flutter build macos --release \
+            --dart-define=API_BASE_URL=https://tools.zonies.xyz/api/mobile/v1 \
+            --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
+
+      - name: Create ZIP archive
+        run: |
+          cd build/macos/Build/Products/Release
+          zip -r ../../../../../rule7_app-macos.zip rule7_app.app
+
+      - name: Create DMG
+        run: |
+          brew install create-dmg || true
+          create-dmg \
+            --volname "Rule7 Installer" \
+            --window-pos 200 120 \
+            --window-size 800 400 \
+            --icon-size 100 \
+            --icon "rule7_app.app" 200 190 \
+            --hide-extension "rule7_app.app" \
+            --app-drop-link 600 185 \
+            rule7_app-macos.dmg \
+            build/macos/Build/Products/Release/
+
+      - name: Upload macOS artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            rule7_app-macos.zip
+            rule7_app-macos.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 'stable'
+          channel: 'stable'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libblkid1 \
+            liblzma5 \
+            desktop-file-utils \
+            libappstream-dev
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Build Linux release
+        run: |
+          flutter build linux --release \
+            --dart-define=API_BASE_URL=https://tools.zonies.xyz/api/mobile/v1 \
+            --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
+
+      - name: Create TAR.GZ archive
+        run: |
+          cd build/linux/x64/release
+          tar -czf ../../../../rule7_app-linux.tar.gz bundle/
+
+      - name: Setup AppImageKit
+        run: |
+          wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          sudo mv appimagetool-x86_64.AppImage /usr/local/bin/appimagetool
+
+      - name: Prepare AppImage
+        run: |
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+          
+          # Copy bundle files to usr/bin
+          cp -r build/linux/x64/release/bundle/* AppDir/usr/bin/
+          
+          # Find the actual executable name
+          EXECUTABLE=$(find AppDir/usr/bin -type f -executable ! -name "*.so" ! -name "*.so.*" | head -n 1 | xargs basename)
+          
+          # Create desktop file
+          cat > AppDir/usr/share/applications/rule7_app.desktop <<EOF
+          [Desktop Entry]
+          Name=Rule7
+          Comment=Rule7 Application
+          Exec=$EXECUTABLE
+          Icon=rule7_app
+          Type=Application
+          Categories=Utility;
+          EOF
+          
+          # Try to copy icon if it exists
+          if [ -f "linux/runner/resources/app_icon.png" ]; then
+            cp linux/runner/resources/app_icon.png AppDir/usr/share/icons/hicolor/256x256/apps/rule7_app.png
+          fi
+          
+          # Create AppRun symlink for AppImage compatibility
+          ln -sf usr/bin/$EXECUTABLE AppDir/AppRun
+
+      - name: Create AppImage
+        run: |
+          ARCH=x86_64 appimagetool AppDir rule7_app-linux.AppImage
+
+      - name: Upload Linux artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            rule7_app-linux.tar.gz
+            rule7_app-linux.AppImage
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-android:
+    name: Build Android
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 'stable'
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Android APK
+        run: |
+          flutter build apk --release \
+            --dart-define=API_BASE_URL=https://tools.zonies.xyz/api/mobile/v1 \
+            --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
+
+      - name: Rename APK
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk rule7_app-android.apk
+
+      - name: Upload Android artifact
+        uses: softprops/action-gh-release@v2
+        with:
+          files: rule7_app-android.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
