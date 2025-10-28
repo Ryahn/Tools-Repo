@@ -119,11 +119,27 @@ jobs:
       - name: Flutter deps
         run: flutter pub get
 
+      - name: Pod install (clean)
+        run: |
+          cd macos
+          pod install --repo-update
+
       - name: Show Xcode build settings (Release)
         run: |
           xcodebuild -project macos/Runner.xcodeproj \
             -scheme Runner -configuration Release -showBuildSettings | \
             egrep 'CODE_SIGN|CODE_SIGN_STYLE|DEVELOPMENT_TEAM|PRODUCT_BUNDLE_IDENTIFIER|PROVISIONING_PROFILE' || true
+
+      - name: Check Xcode team ID
+        run: |
+          echo "=== Verifying Team ID ==="
+          xcodebuild -project macos/Runner.xcodeproj \
+            -scheme Runner -configuration Release -showBuildSettings | \
+            egrep 'CODE_SIGN_IDENTITY|DEVELOPMENT_TEAM|PROVISIONING_PROFILE' || true
+          echo ""
+          echo "Expected: DEVELOPMENT_TEAM = A54L5PGPNX"
+          echo "Expected: CODE_SIGN_IDENTITY = Developer ID Application"
+          echo "Expected: PROVISIONING_PROFILE_SPECIFIER = (empty or not set)"
 
       - name: Import Developer ID cert (only if provided)
         env:
