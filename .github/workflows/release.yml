@@ -119,14 +119,11 @@ jobs:
       - name: Flutter deps
         run: flutter pub get
 
-      - name: Show build settings (Release)
+      - name: Show Xcode build settings (Release)
         run: |
           xcodebuild -project macos/Runner.xcodeproj \
             -scheme Runner -configuration Release -showBuildSettings | \
-            egrep 'CODE_SIGN|DEVELOPMENT_TEAM|PRODUCT_BUNDLE_IDENTIFIER|PROVISIONING_PROFILE|CODE_SIGN_STYLE' || true
-
-      - name: Show signing identities (debug)
-        run: security find-identity -v -p codesigning || true
+            egrep 'CODE_SIGN|CODE_SIGN_STYLE|DEVELOPMENT_TEAM|PRODUCT_BUNDLE_IDENTIFIER|PROVISIONING_PROFILE' || true
 
       - name: Import Developer ID cert (only if provided)
         env:
@@ -148,7 +145,7 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
-      - name: Build macOS (signed if cert present, otherwise unsigned)
+      - name: Build macOS (signed if certs exist, otherwise unsigned)
         shell: bash
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
@@ -166,7 +163,6 @@ jobs:
             flutter build macos --release \
               --dart-define=API_BASE_URL=https://tools.zonies.xyz/api/mobile/v1 \
               --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
-            # Sanity: show signing on product
             codesign -dv --verbose=4 "build/macos/Build/Products/Release/rule7_app.app" || true
           fi
 
