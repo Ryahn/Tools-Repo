@@ -36,7 +36,7 @@ help: ## Show this help message
 	}' $(MAKEFILE_LIST)
 	@printf "\nTip: pass \033[33mSERVICE=name\033[0m to scope restart/logs, e.g., \033[33mmake restart SERVICE=$(APP_SERVICE)\033[0m\n\n"
 
-.PHONY: help setup dev prod stop restart restart-all fresh build shell logs logs-app logs-mysql logs-redis cache-clear composer npm artisan schedule queue monitor run-schedule migrate migrate-fresh seed match-reports db-backup db-restore status health logs-size container-size cleanup-bloat clean clean-all fix-permissions flutter-fix-pods flutter-run flutter-run-profile flutter-build-macos flutter-build-android flutter-build-linux flutter-clean flutter-pub-get flutter-build-runner flutter-test ci
+.PHONY: help setup dev prod stop restart restart-all fresh build shell logs logs-app logs-mysql logs-redis cache-clear composer npm artisan schedule queue monitor run-schedule migrate migrate-fresh seed match-reports db-backup db-restore status health logs-size container-size cleanup-bloat clean clean-all fix-permissions flutter-fix-pods flutter-run flutter-run-profile flutter-build-macos flutter-build-android flutter-build-linux flutter-clean flutter-pub-get flutter-build-runner flutter-test ci download-release deploy-release-server
 
 ##@ Permissions
 fix-permissions: ## Fix file permissions after Carbon Copy Cloner or similar backups
@@ -121,3 +121,24 @@ flutter-build-runner: ## Run code generation (json_serializable, freezed, etc.)
 
 flutter-test: ## Run Flutter tests
 	@flutter test
+
+##@ Release Deployment
+download-release: ## Download latest release from GitHub (usage: make download-release PLATFORM=all|windows|macos|linux|android DOWNLOAD_DIR=./releases)
+	@echo "📥 Downloading latest release..."
+	@./scripts/download-latest-release.sh
+
+deploy-release-server: download-release ## Download latest release and deploy to server (usage: make deploy-release-server SERVER=user@host:/path PLATFORM=linux)
+	@if [ -z "$(SERVER)" ]; then \
+		echo "❌ Error: SERVER variable required (e.g., make deploy-release-server SERVER=user@host:/opt/rule7)"; \
+		exit 1; \
+	fi
+	@echo "🚀 Deploying to server: $(SERVER)"
+	@PLATFORM=$(or $(PLATFORM),linux) ./scripts/download-latest-release.sh
+	@LATEST_RELEASE=$$(ls -td releases/v* 2>/dev/null | head -n1); \
+	if [ -z "$$LATEST_RELEASE" ]; then \
+		echo "❌ No release found in releases/ directory"; \
+		exit 1; \
+	fi; \
+	echo "📦 Deploying release: $$LATEST_RELEASE"; \
+	scp -r "$$LATEST_RELEASE"/* $(SERVER)/ && \
+	echo "✅ Deployment complete!"
