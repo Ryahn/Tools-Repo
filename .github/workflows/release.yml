@@ -119,8 +119,13 @@ jobs:
       - name: Flutter deps
         run: flutter pub get
 
-      # Optional: show code signing identities (debugging only)
-      - name: List available code signing identities
+      - name: Show build settings (Release)
+        run: |
+          xcodebuild -project macos/Runner.xcodeproj \
+            -scheme Runner -configuration Release -showBuildSettings | \
+            egrep 'CODE_SIGN|DEVELOPMENT_TEAM|PRODUCT_BUNDLE_IDENTIFIER|PROVISIONING_PROFILE|CODE_SIGN_STYLE' || true
+
+      - name: Show signing identities (debug)
         run: security find-identity -v -p codesigning || true
 
       - name: Import Developer ID cert (only if provided)
@@ -133,7 +138,6 @@ jobs:
             echo "No certificate provided, skipping import"
             exit 0
           fi
-          
           CERT=$RUNNER_TEMP/cert.p12
           KEYCHAIN=$RUNNER_TEMP/build.keychain-db
           echo "$CERTIFICATE_BASE64" | base64 --decode > "$CERT"
@@ -144,72 +148,69 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
-      - name: Build macOS
+      - name: Build macOS (signed if cert present, otherwise unsigned)
         shell: bash
         env:
-          APP_BUNDLE_ID: com.ryahn.rule7app
-          TEAM_ID: 3WGL87VS8W
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
         run: |
+          set -e
           if [ -z "$CERTIFICATE_BASE64" ]; then
-            echo "No cert secrets found -> building unsigned"
+            echo "No cert -> building unsigned"
             flutter build macos --release --no-codesign \
               --dart-define=API_BASE_URL=https://tools.zonies.xyz/api/mobile/v1 \
               --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
           else
-            echo "Cert secrets present -> building signed"
+            echo "Cert present -> building signed"
+            KEYCHAIN=$RUNNER_TEMP/build.keychain-db
+            security list-keychain -d user -s "$KEYCHAIN"
             flutter build macos --release \
               --dart-define=API_BASE_URL=https://tools.zonies.xyz/api/mobile/v1 \
               --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
+            # Sanity: show signing on product
+            codesign -dv --verbose=4 "build/macos/Build/Products/Release/rule7_app.app" || true
           fi
 
-      - name: Verify signature (only if signed)
+      - name: Zip app for notarization
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
         run: |
-          if [ -z "$CERTIFICATE_BASE64" ]; then
-            echo "App was not signed, skipping signature verification"
+          if [ -z "$CERTIFICATE_BASE64" ] || [ -z "$AC_API_KEY_ID" ]; then
+            echo "Skipping zip for notarization - missing cert or API key"
             exit 0
           fi
-          codesign -dv --verbose=4 "build/macos/Build/Products/Release/rule7_app.app" || true
+          cd build/macos/Build/Products/Release
+          ditto -c -k --sequesterRsrc --keepParent "rule7_app.app" "../../../rule7_app-macos.zip"
 
-      - name: Notarize app
+      - name: Notarize (notarytool)
         env:
-          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
           AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
           AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
           AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
         run: |
-          # Only notarize if API keys are provided and app was signed
-          if [ -z "$AC_API_KEY_ID" ] || [ -z "$AC_API_KEY_P8" ] || [ -z "$AC_API_ISSUER_ID" ]; then
-            echo "⚠️  Skipping notarization: App Store Connect API keys not configured"
+          if [ -z "$CERTIFICATE_BASE64" ] || [ -z "$AC_API_KEY_ID" ]; then
+            echo "Skipping notarization - missing cert or API key"
             exit 0
           fi
-          
-          if [ -z "$MACOS_CERTIFICATE_BASE64" ]; then
-            echo "⚠️  Skipping notarization: App was not signed (no certificate provided)"
-            exit 0
-          fi
-          
-          echo "📦 Starting notarization process..."
           KEY=$RUNNER_TEMP/ac_api_key.p8
           echo "$AC_API_KEY_P8" | base64 --decode > "$KEY"
-          
-          echo "📤 Submitting app to Apple notary service..."
-          xcrun notarytool submit "build/macos/Build/Products/Release/rule7_app.app" \
+          xcrun notarytool submit "build/macos/rule7_app-macos.zip" \
             --key "$KEY" \
             --key-id "$AC_API_KEY_ID" \
             --issuer "$AC_API_ISSUER_ID" \
             --wait
-          
-          echo "✅ Notarization successful, stapling ticket to app..."
-          xcrun stapler staple "build/macos/Build/Products/Release/rule7_app.app"
-          echo "✅ Notarization complete! App is now notarized and ready for distribution."
 
-      - name: ZIP app
+      - name: Staple ticket
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
         run: |
-          cd build/macos/Build/Products/Release
-          zip -r ../../../../../rule7_app-macos.zip rule7_app.app
+          if [ -z "$CERTIFICATE_BASE64" ] || [ -z "$AC_API_KEY_ID" ]; then
+            echo "Skipping stapling - missing cert or API key"
+            exit 0
+          fi
+          xcrun stapler staple "build/macos/Build/Products/Release/rule7_app.app"
 
       - name: Create DMG
         run: |
@@ -228,7 +229,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            rule7_app-macos.zip
+            build/macos/rule7_app-macos.zip
             rule7_app-macos.dmg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
