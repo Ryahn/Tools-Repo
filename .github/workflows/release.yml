@@ -172,11 +172,10 @@ jobs:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
           SIGNING_IDENTITY: ${{ env.SIGNING_IDENTITY }}
         run: |
-          # Always use manual signing style (no provisioning profile needed for Developer ID)
-          sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' macos/Runner.xcodeproj/project.pbxproj
-          
           if [ -n "$CERTIFICATE_BASE64" ] && [ -n "$SIGNING_IDENTITY" ]; then
             echo "Configuring manual signing with certificate: $SIGNING_IDENTITY"
+            # Use manual signing style with specific certificate
+            sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' macos/Runner.xcodeproj/project.pbxproj
             # Set the specific certificate identity for manual signing
             # Escape the identity for sed (it may contain special characters like parentheses)
             ESCAPED_IDENTITY=$(echo "$SIGNING_IDENTITY" | sed 's/[()]/\\&/g')
@@ -184,12 +183,19 @@ jobs:
             sed -i '' "s|\"CODE_SIGN_IDENTITY\[sdk=macosx\*\]\" = \"\";|\"CODE_SIGN_IDENTITY[sdk=macosx*]\" = \"$ESCAPED_IDENTITY\";|g" macos/Runner.xcodeproj/project.pbxproj
             # Remove development team - not needed for Developer ID manual signing
             sed -i '' '/DEVELOPMENT_TEAM = A54L5PGPNX;/d' macos/Runner.xcodeproj/project.pbxproj
+            # Remove provisioning profile specifier
+            sed -i '' 's/PROVISIONING_PROFILE_SPECIFIER = .*;//g' macos/Runner.xcodeproj/project.pbxproj
           else
-            echo "No certificate provided, disabling code signing"
-            # Disable code signing completely
-            sed -i '' 's/"CODE_SIGN_IDENTITY\[sdk=macosx\*\]" = "Apple Development";/"CODE_SIGN_IDENTITY[sdk=macosx*]" = "";/g' macos/Runner.xcodeproj/project.pbxproj
-            # Remove development team to prevent provisioning profile errors
+            echo "No certificate provided, completely disabling code signing"
+            # Completely disable code signing by setting identity to dash
+            sed -i '' 's/CODE_SIGN_STYLE = Automatic;/CODE_SIGN_STYLE = Manual;/g' macos/Runner.xcodeproj/project.pbxproj
+            sed -i '' 's/"CODE_SIGN_IDENTITY\[sdk=macosx\*\]" = "Apple Development";/"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";/g' macos/Runner.xcodeproj/project.pbxproj
+            sed -i '' 's/"CODE_SIGN_IDENTITY\[sdk=macosx\*\]" = "";/"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";/g' macos/Runner.xcodeproj/project.pbxproj
+            # Remove development team and provisioning profile
             sed -i '' '/DEVELOPMENT_TEAM = A54L5PGPNX;/d' macos/Runner.xcodeproj/project.pbxproj
+            sed -i '' 's/PROVISIONING_PROFILE_SPECIFIER = .*;//g' macos/Runner.xcodeproj/project.pbxproj
+            # Remove entitlements to avoid provisioning profile requirement
+            sed -i '' 's/CODE_SIGN_ENTITLEMENTS = Runner\/Release.entitlements;//g' macos/Runner.xcodeproj/project.pbxproj
           fi
 
       - name: Build macOS release
@@ -292,31 +298,48 @@ jobs:
           # Copy bundle files to usr/bin
           cp -r build/linux/x64/release/bundle/* AppDir/usr/bin/
           
-          # Find the actual executable name
-          EXECUTABLE=$(find AppDir/usr/bin -type f -executable ! -name "*.so" ! -name "*.so.*" | head -n 1 | xargs basename)
+          # Find the actual executable name (should be rule7_app)
+          EXECUTABLE=$(find AppDir/usr/bin -type f -executable ! -name "*.so" ! -name "*.so.*" ! -name "*.desktop" | head -n 1)
+          EXECUTABLE_NAME=$(basename "$EXECUTABLE")
           
-          # Create desktop file
-          cat > AppDir/usr/share/applications/rule7_app.desktop <<EOF
+          if [ -z "$EXECUTABLE" ]; then
+            echo "Error: Could not find executable in bundle"
+            exit 1
+          fi
+          
+          echo "Found executable: $EXECUTABLE_NAME"
+          
+          # Create desktop file in the root AppDir (appimagetool looks here first)
+          cat > AppDir/rule7_app.desktop <<DESKTOP_EOF
           [Desktop Entry]
           Name=Rule7
           Comment=Rule7 Application
-          Exec=$EXECUTABLE
+          Exec=$EXECUTABLE_NAME
           Icon=rule7_app
           Type=Application
           Categories=Utility;
-          EOF
+          DESKTOP_EOF
+          
+          # Also create in usr/share/applications
+          cp AppDir/rule7_app.desktop AppDir/usr/share/applications/rule7_app.desktop
           
           # Try to copy icon if it exists
           if [ -f "linux/runner/resources/app_icon.png" ]; then
             cp linux/runner/resources/app_icon.png AppDir/usr/share/icons/hicolor/256x256/apps/rule7_app.png
+            cp linux/runner/resources/app_icon.png AppDir/rule7_app.png
           fi
           
-          # Create AppRun symlink for AppImage compatibility
-          ln -sf usr/bin/$EXECUTABLE AppDir/AppRun
+          # Create AppRun script (not a symlink, but an actual script)
+          cat > AppDir/AppRun <<APPRUN_EOF
+          #!/bin/bash
+          cd "\$${APPDIR}/usr/bin"
+          exec "./$EXECUTABLE_NAME" "\$$@"
+          APPRUN_EOF
+          chmod +x AppDir/AppRun
 
       - name: Create AppImage
         run: |
-          ARCH=x86_64 appimagetool AppDir rule7_app-linux.AppImage
+          cd AppDir && ARCH=x86_64 appimagetool . ../rule7_app-linux.AppImage
 
       - name: Upload Linux artifacts
         uses: softprops/action-gh-release@v2
