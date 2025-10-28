@@ -249,8 +249,16 @@ jobs:
       - name: Install build deps
         run: |
           sudo apt-get update
-          # Flutter desktop uses GTK. These are common runtime bits; having them in CI avoids false failures.
-          sudo apt-get install -y libgtk-3-0 libayatana-appindicator3-1 patchelf imagemagick
+          sudo apt-get install -y \
+            clang \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libgtk-3-dev \
+            liblzma-dev \
+            libayatana-appindicator3-1 \
+            patchelf \
+            imagemagick
 
       - name: Get deps
         run: flutter pub get
