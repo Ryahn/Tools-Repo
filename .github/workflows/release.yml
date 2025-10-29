@@ -18,8 +18,8 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 3.35.7
-          channel: stable
+          flutter-version: '3.35.7'
+          channel: 'stable'
 
       - name: Install dependencies
         run: flutter pub get
@@ -31,17 +31,16 @@ jobs:
             --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
 
       - name: Create ZIP archive
-        run: >
-          Compress-Archive -Path "build\windows\x64\runner\Release\*"
-          -DestinationPath "rule7_app-windows.zip" -Force
+        run: |
+          Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "rule7_app-windows.zip" -Force
 
       - name: Setup Inno Setup
-        run: choco install innosetup -y --no-progress
+        run: |
+          choco install innosetup -y --no-progress
 
       - name: Create Inno Setup script
-        run: >
+        run: |
           $scriptContent = @"
-
           [Setup]
           AppName=Rule7
           AppVersion=$env:GITHUB_REF_NAME
@@ -70,6 +69,7 @@ jobs:
 
       - name: Build installer
         run: |
+          # Try multiple possible paths for Inno Setup
           $possiblePaths = @(
             "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
             "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
@@ -77,10 +77,20 @@ jobs:
           )
           $innosetupPath = $null
           foreach ($path in $possiblePaths) {
-            if (Test-Path $path) { $innosetupPath = $path; break }
+            if (Test-Path $path) {
+              $innosetupPath = $path
+              break
+            }
           }
-          if (!$innosetupPath) { $innosetupPath = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source }
-          if (!$innosetupPath) { Write-Error "Inno Setup compiler (ISCC.exe) not found"; exit 1 }
+          if (!$innosetupPath) {
+            # Try to find it in PATH
+            $innosetupPath = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
+          }
+          if (!$innosetupPath) {
+            Write-Error "Inno Setup compiler (ISCC.exe) not found"
+            exit 1
+          }
+          Write-Host "Using Inno Setup at: $innosetupPath"
           & $innosetupPath installer.iss
 
       - name: Upload Windows artifacts
@@ -217,8 +227,8 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 3.35.7
-          channel: stable
+          flutter-version: '3.35.7'
+          channel: 'stable'
 
       - name: Install build deps
         run: |
@@ -243,8 +253,9 @@ jobs:
             --dart-define=API_BASE_URL=https://tools.zonies.xyz/api/mobile/v1 \
             --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
 
+      # ---------- AppImage packaging ----------
       - name: Prepare AppDir
-        run: >
+        run: |
           APP=rule7_app
           BUNDLE=build/linux/x64/release/bundle
           APPDIR=$PWD/AppDir
@@ -252,8 +263,10 @@ jobs:
           mkdir -p $APPDIR/usr/share/applications
           mkdir -p $APPDIR/usr/share/icons/hicolor/256x256/apps
 
+          # Copy Flutter bundle
           cp -R "$BUNDLE"/* "$APPDIR/usr/bin/"
 
+          # Minimal AppRun to point to your binary
           cat > $APPDIR/AppRun << 'EOF'
           #!/usr/bin/env bash
           HERE="$(dirname "$(readlink -f "$0")")"
@@ -261,6 +274,7 @@ jobs:
           EOF
           chmod +x $APPDIR/AppRun
 
+          # Desktop file
           cat > $APPDIR/$APP.desktop << 'EOF'
           [Desktop Entry]
           Type=Application
@@ -270,9 +284,10 @@ jobs:
           Categories=Utility;
           Terminal=false
           EOF
-
           cp $APPDIR/$APP.desktop $APPDIR/usr/share/applications/
 
+          # Icon: reuse the Flutter icon if you don't have a real one yet
+          # Place a 256x256 PNG as rule7.png if you have branding; otherwise make a placeholder
           if [ -f "linux/runner/resources/app_icon.png" ]; then
             cp linux/runner/resources/app_icon.png $APPDIR/usr/share/icons/hicolor/256x256/apps/rule7.png
             cp linux/runner/resources/app_icon.png $APPDIR/rule7.png
@@ -281,16 +296,19 @@ jobs:
             convert -size 256x256 xc:#111111 $APPDIR/rule7.png || true
           fi
 
+          # Ensure main binary is executable
           chmod +x $APPDIR/usr/bin/rule7_app
 
       - name: Build AppImage (no FUSE)
-        run: >
+        run: |
           wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
           chmod +x appimagetool
+          # Extract to avoid FUSE requirement on GH runners
           ./appimagetool --appimage-extract >/dev/null
           ./squashfs-root/AppRun AppDir
           mv Rule7-*.AppImage rule7_app-x86_64.AppImage || mv rule7_app-*.AppImage rule7_app-x86_64.AppImage || true
 
+      # ---------- tar.xz fallback (useful for servers/CI users) ----------
       - name: Create tarball
         run: |
           cd build/linux/x64/release
