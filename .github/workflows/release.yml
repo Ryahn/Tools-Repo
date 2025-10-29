@@ -1,9 +1,8 @@
 name: Build Release
-
 on:
   push:
     tags:
-      - 'v*' # Trigger on version tags like v1.0.0, v1.2.3, etc.
+      - v*
 
 permissions:
   contents: write
@@ -19,8 +18,8 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.35.7'
-          channel: 'stable'
+          flutter-version: 3.35.7
+          channel: stable
 
       - name: Install dependencies
         run: flutter pub get
@@ -32,16 +31,18 @@ jobs:
             --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
 
       - name: Create ZIP archive
-        run: |
-          Compress-Archive -Path "build\windows\x64\runner\Release\*" -DestinationPath "rule7_app-windows.zip" -Force
+        run: >
+          Compress-Archive -Path "build\windows\x64\runner\Release\*"
+          -DestinationPath "rule7_app-windows.zip" -Force
 
       - name: Setup Inno Setup
         run: |
           choco install innosetup -y --no-progress
 
       - name: Create Inno Setup script
-        run: |
+        run: >
           $scriptContent = @"
+
           [Setup]
           AppName=Rule7
           AppVersion=$env:GITHUB_REF_NAME
@@ -66,6 +67,7 @@ jobs:
           [Tasks]
           Name: "desktopicon"; Description: "Create a desktop icon"; GroupDescription: "Additional icons:"
           "@
+
           $scriptContent | Out-File -FilePath "installer.iss" -Encoding UTF8
 
       - name: Build installer
@@ -104,22 +106,60 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-macos:
+    name: Build macOS
     runs-on: macos-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.35.7'
-          channel: 'stable'
+          channel: stable
 
-      - name: Build macOS (always unsigned; we sign after)
+      - name: Flutter deps + CocoaPods
         run: |
           flutter pub get
-          cd macos && pod install --repo-update && cd ..
+          cd macos
+          rm -rf Pods Podfile.lock
+          pod install --repo-update
+          cd ..
+
+      - name: Import Developer ID cert
+        if: secrets.MACOS_CERTIFICATE_BASE64
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -e
+          CERT=$RUNNER_TEMP/cert.p12
+          KEYCHAIN=$RUNNER_TEMP/build.keychain-db
+          echo "$CERTIFICATE_BASE64" | base64 --decode > "$CERT"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          security import "$CERT" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+
+          # Import Apple WWDR G3 (trust chain)
+          curl -sL https://developer.apple.com/certificationauthority/AppleWWDRCAG3.cer -o "$RUNNER_TEMP/wwdr.cer"
+          security import "$RUNNER_TEMP/wwdr.cer" -k "$KEYCHAIN" -A -t cert || true
+
+          # Add to search list and set default
+          EXISTING=$(security list-keychains -d user | sed 's/[" ]//g')
+          security list-keychain -d user -s "$KEYCHAIN" $EXISTING
+          security default-keychain -s "$KEYCHAIN"
+
+          # Allow non-interactive codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          # Verify identity
+          security find-identity -v -p codesigning "$KEYCHAIN" || true
+
+      - name: Build macOS (unsigned; flags also set in AppInfo.xcconfig)
+        run: |
+          # Double-disable signing at runtime too
           export CODE_SIGNING_ALLOWED=NO
           export CODE_SIGNING_REQUIRED=NO
           export CODE_SIGN_IDENTITY=-
@@ -127,159 +167,33 @@ jobs:
             --dart-define=API_BASE_URL=https://tools.zonies.xyz/api/mobile/v1 \
             --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
 
-      - name: Show Xcode build settings (Release)
+      - name: Post-build codesign (Developer ID)
+        if: success() && secrets.MACOS_CERTIFICATE_BASE64
         run: |
-          xcodebuild -project macos/Runner.xcodeproj \
-            -scheme Runner -configuration Release -showBuildSettings | \
-            egrep 'CODE_SIGN|CODE_SIGN_STYLE|DEVELOPMENT_TEAM|PRODUCT_BUNDLE_IDENTIFIER|PROVISIONING_PROFILE' || true
-
-      - name: Check Xcode team ID
-        run: |
-          echo "=== Verifying Team ID ==="
-          xcodebuild -project macos/Runner.xcodeproj \
-            -scheme Runner -configuration Release -showBuildSettings | \
-            egrep 'CODE_SIGN_IDENTITY|DEVELOPMENT_TEAM|PROVISIONING_PROFILE' || true
-          echo ""
-          echo "Expected: DEVELOPMENT_TEAM = A54L5PGPNX"
-          echo "Expected: CODE_SIGN_IDENTITY = Developer ID Application"
-          echo "Expected: PROVISIONING_PROFILE_SPECIFIER = (empty or not set)"
-
-      - name: Scrub pbxproj for stray provisioning/profile keys
-        run: |
-          P=macos/Runner.xcodeproj/project.pbxproj
-          # Remove any lingering explicit provisioning refs
-          sed -i '' '/PROVISIONING_PROFILE[^_]/d' "$P" || true
-          sed -i '' 's/PROVISIONING_PROFILE_SPECIFIER = .*/PROVISIONING_PROFILE_SPECIFIER = "";/g' "$P" || true
-          # Ensure Developer ID everywhere
-          sed -i '' 's/"CODE_SIGN_IDENTITY\[sdk=macosx\*\]" = .*/"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";/g' "$P" || true
-          sed -i '' 's/CODE_SIGN_STYLE = .*/CODE_SIGN_STYLE = Manual;/g' "$P" || true
-          sed -i '' 's/DEVELOPMENT_TEAM = .*/DEVELOPMENT_TEAM = A54L5PGPNX;/g' "$P" || true
-          echo "✅ Project file scrubbed for stray provisioning references"
-
-      - name: Import Developer ID cert (only if provided)
-        env:
-          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [ -z "$CERTIFICATE_BASE64" ]; then
-            echo "No certificate provided, skipping import"
-            exit 0
-          fi
-          
-          CERT="$RUNNER_TEMP/cert.p12"
-          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
-          echo "$CERTIFICATE_BASE64" | base64 --decode > "$CERT"
-
-          # Create + unlock temp keychain
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-
-          # Import Developer ID p12 (must include PRIVATE KEY)
-          security import "$CERT" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
-
-          # Import WWDR G3 intermediate to the same keychain (trust chain)
-          curl -sL https://developer.apple.com/certificationauthority/AppleWWDRCAG3.cer -o "$RUNNER_TEMP/wwdr.cer"
-          security import "$RUNNER_TEMP/wwdr.cer" -k "$KEYCHAIN" -A -t cert || true
-
-          # Add temp keychain to search list without dropping existing ones
-          EXISTING=$(security list-keychains -d user | sed 's/[[:space:]"]//g' | tr '\n' ' ')
-          security list-keychain -d user -s "$KEYCHAIN" $EXISTING
-
-          # Make temp keychain default so xcodebuild/codesign use it
-          security default-keychain -s "$KEYCHAIN"
-
-          # Allow codesign non-interactive access
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-
-      - name: Verify identity (after import)
-        env:
-          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
-        run: |
-          if [ -z "$CERTIFICATE_BASE64" ]; then
-            echo "No certificate was imported, skipping identity check"
-            exit 0
-          fi
-          security find-identity -v -p codesigning "$RUNNER_TEMP/build.keychain-db" || true
-
-      - name: Assert Team ID matches signing identity
-        env:
-          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
-        run: |
-          if [ -z "$CERTIFICATE_BASE64" ]; then
-            echo "No certificate provided, skipping Team ID assertion"
-            exit 0
-          fi
-          TID=$(xcodebuild -project macos/Runner.xcodeproj -scheme Runner -configuration Release -showBuildSettings | awk -F' = ' '/DEVELOPMENT_TEAM/{print $2; exit}')
-          echo "PROJECT TEAM: $TID"
-          CERT_TID=$(security find-identity -v -p codesigning "$RUNNER_TEMP/build.keychain-db" 2>/dev/null | sed -n 's/.*(\([A-Z0-9]\{10\}\)).*/CERT TEAM: \1/p' | head -1 || echo "CERT TEAM: (not found)")
-          echo "$CERT_TID"
-          if [ -z "$TID" ] || [ "$TID" = "" ]; then
-            echo "⚠️  Warning: Could not read Team ID from project"
-            exit 0
-          fi
-
-      - name: Explicit codesign (deep)
-        env:
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
-        run: |
-          if [ -z "$CERTIFICATE_BASE64" ]; then
-            echo "No certificate provided, skipping explicit codesign"
-            exit 0
-          fi
           APP="build/macos/Build/Products/Release/rule7_app.app"
-          echo "🔐 Deep-signing with Developer ID…"
           codesign --force --deep --options runtime \
             --entitlements "macos/Runner/Release.entitlements" \
             --sign "Developer ID Application: Ryan Patrick Carr (A54L5PGPNX)" \
             "$APP"
-          echo "✅ Verify:"
           codesign --verify --deep --strict --verbose=2 "$APP" || true
 
-      - name: Zip app for notarization
-        env:
-          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
-          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+      - name: Notarize (if API creds present)
+        if: success() && secrets.MACOS_CERTIFICATE_BASE64 && secrets.AC_API_KEY_ID && secrets.AC_API_ISSUER_ID && secrets.AC_API_KEY_P8
         run: |
-          if [ -z "$CERTIFICATE_BASE64" ] || [ -z "$AC_API_KEY_ID" ]; then
-            echo "Skipping zip for notarization - missing cert or API key"
-            exit 0
-          fi
-          cd build/macos/Build/Products/Release
-          ditto -c -k --sequesterRsrc --keepParent "rule7_app.app" "../../../rule7_app-macos.zip"
+          APP="build/macos/Build/Products/Release/rule7_app.app"
+          ZIP="build/macos/rule7_app-macos.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
 
-      - name: Notarize (notarytool)
-        env:
-          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
-          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
-          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
-          AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
-        run: |
-          if [ -z "$CERTIFICATE_BASE64" ] || [ -z "$AC_API_KEY_ID" ]; then
-            echo "Skipping notarization - missing cert or API key"
-            exit 0
-          fi
-          KEY=$RUNNER_TEMP/ac_api_key.p8
-          echo "$AC_API_KEY_P8" | base64 --decode > "$KEY"
-          xcrun notarytool submit "build/macos/rule7_app-macos.zip" \
+          KEY="$RUNNER_TEMP/ac_api_key.p8"
+          echo "${{ secrets.AC_API_KEY_P8 }}" | base64 --decode > "$KEY"
+
+          xcrun notarytool submit "$ZIP" \
             --key "$KEY" \
-            --key-id "$AC_API_KEY_ID" \
-            --issuer "$AC_API_ISSUER_ID" \
+            --key-id "${{ secrets.AC_API_KEY_ID }}" \
+            --issuer "${{ secrets.AC_API_ISSUER_ID }}" \
             --wait
 
-      - name: Staple ticket
-        env:
-          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
-          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
-        run: |
-          if [ -z "$CERTIFICATE_BASE64" ] || [ -z "$AC_API_KEY_ID" ]; then
-            echo "Skipping stapling - missing cert or API key"
-            exit 0
-          fi
-          xcrun stapler staple "build/macos/Build/Products/Release/rule7_app.app"
+          xcrun stapler staple "$APP"
 
       - name: Create DMG
         run: |
@@ -313,8 +227,8 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.35.7'
-          channel: 'stable'
+          flutter-version: 3.35.7
+          channel: stable
 
       - name: Install build deps
         run: |
@@ -339,9 +253,8 @@ jobs:
             --dart-define=API_BASE_URL=https://tools.zonies.xyz/api/mobile/v1 \
             --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
 
-      # ---------- AppImage packaging ----------
       - name: Prepare AppDir
-        run: |
+        run: >
           APP=rule7_app
           BUNDLE=build/linux/x64/release/bundle
           APPDIR=$PWD/AppDir
@@ -358,6 +271,7 @@ jobs:
           HERE="$(dirname "$(readlink -f "$0")")"
           exec "$HERE/usr/bin/rule7_app" "$@"
           EOF
+
           chmod +x $APPDIR/AppRun
 
           # Desktop file
@@ -370,10 +284,10 @@ jobs:
           Categories=Utility;
           Terminal=false
           EOF
+
           cp $APPDIR/$APP.desktop $APPDIR/usr/share/applications/
 
-          # Icon: reuse the Flutter icon if you don't have a real one yet
-          # Place a 256x256 PNG as rule7.png if you have branding; otherwise make a placeholder
+          # Icon
           if [ -f "linux/runner/resources/app_icon.png" ]; then
             cp linux/runner/resources/app_icon.png $APPDIR/usr/share/icons/hicolor/256x256/apps/rule7.png
             cp linux/runner/resources/app_icon.png $APPDIR/rule7.png
@@ -386,15 +300,13 @@ jobs:
           chmod +x $APPDIR/usr/bin/rule7_app
 
       - name: Build AppImage (no FUSE)
-        run: |
+        run: >
           wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
           chmod +x appimagetool
-          # Extract to avoid FUSE requirement on GH runners
           ./appimagetool --appimage-extract >/dev/null
           ./squashfs-root/AppRun AppDir
           mv Rule7-*.AppImage rule7_app-x86_64.AppImage || mv rule7_app-*.AppImage rule7_app-x86_64.AppImage || true
 
-      # ---------- tar.xz fallback (useful for servers/CI users) ----------
       - name: Create tarball
         run: |
           cd build/linux/x64/release
@@ -419,14 +331,14 @@ jobs:
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
+          distribution: zulu
           java-version: '17'
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.35.7'
-          channel: 'stable'
+          flutter-version: 3.35.7
+          channel: stable
 
       - name: Install dependencies
         run: flutter pub get
@@ -447,4 +359,3 @@ jobs:
           files: rule7_app-android.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-

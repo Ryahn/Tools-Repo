@@ -2,4 +2,10 @@
 #include "Warnings.xcconfig"
 #include? "../Pods/Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"
 
+CODE_SIGNING_ALLOWED = NO
+CODE_SIGNING_REQUIRED = NO
+CODE_SIGN_IDENTITY = -
+PROVISIONING_PROFILE_SPECIFIER =
+PROVISIONING_PROFILE =
+
 PRODUCT_BUNDLE_IDENTIFIER = com.ryahn.rule7app

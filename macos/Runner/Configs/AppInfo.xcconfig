@@ -1,18 +1,15 @@
-// Application-level settings for the Runner target.
-//
-// This may be replaced with something auto-generated from metadata (e.g., pubspec.yaml) in the
-// future. If not, the values below would default to using the project name when this becomes a
-// 'flutter create' template.
+// CocoaPods: wire all 3 configs so Pods flags are available
 #include? "../../Pods/Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"
 #include? "../../Pods/Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"
 #include? "../../Pods/Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"
 
+// CI: force unsigned build. We will sign explicitly after build.
+CODE_SIGNING_ALLOWED = NO
+CODE_SIGNING_REQUIRED = NO
+CODE_SIGN_IDENTITY = -
+PROVISIONING_PROFILE_SPECIFIER =
+PROVISIONING_PROFILE =
 
-// The application's name. By default this is also the title of the Flutter window.
+// App metadata
 PRODUCT_NAME = rule7_app
-
-// The application's bundle identifier
 PRODUCT_BUNDLE_IDENTIFIER = com.ryahn.rule7app
-
-// The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2025 com.ryahn. All rights reserved.
