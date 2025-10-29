@@ -3,3 +3,8 @@
 #include? "../Pods/Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"
 
 PRODUCT_BUNDLE_IDENTIFIER = com.ryahn.rule7app
+CODE_SIGN_STYLE = Manual
+DEVELOPMENT_TEAM = A54L5PGPNX
+CODE_SIGN_IDENTITY[sdk=macosx*] = Developer ID Application
+PROVISIONING_PROFILE_SPECIFIER =
+PROVISIONING_PROFILE =

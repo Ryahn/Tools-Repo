@@ -116,13 +116,13 @@ jobs:
           flutter-version: '3.35.7'
           channel: 'stable'
 
-      - name: Flutter deps
-        run: flutter pub get
-
-      - name: Pod install (clean)
+      - name: Build macOS (always unsigned; we sign later)
         run: |
-          cd macos
-          pod install --repo-update
+          flutter pub get
+          cd macos && pod install --repo-update && cd ..
+          flutter build macos --release --no-codesign \
+            --dart-define=API_BASE_URL=https://tools.zonies.xyz/api/mobile/v1 \
+            --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
 
       - name: Show Xcode build settings (Release)
         run: |
@@ -218,27 +218,9 @@ jobs:
             exit 0
           fi
 
-      - name: Build macOS
-        shell: bash
-        env:
-          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
-        run: |
-          set -e
-          if [ -z "$CERTIFICATE_BASE64" ]; then
-            echo "No cert -> building unsigned"
-            flutter build macos --release --no-codesign \
-              --dart-define=API_BASE_URL=https://tools.zonies.xyz/api/mobile/v1 \
-              --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
-          else
-            echo "Cert present -> building signed"
-            flutter build macos --release \
-              --dart-define=API_BASE_URL=https://tools.zonies.xyz/api/mobile/v1 \
-              --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
-            codesign -dv --verbose=4 "build/macos/Build/Products/Release/rule7_app.app" || true
-          fi
-
       - name: Explicit codesign (deep)
         env:
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
         run: |
           if [ -z "$CERTIFICATE_BASE64" ]; then
@@ -246,13 +228,13 @@ jobs:
             exit 0
           fi
           APP="build/macos/Build/Products/Release/rule7_app.app"
-          echo "🔐 Performing explicit deep codesign..."
+          echo "🔐 Deep-signing with Developer ID…"
           codesign --force --deep --options runtime \
             --entitlements "macos/Runner/Release.entitlements" \
             --sign "Developer ID Application: Ryan Patrick Carr (A54L5PGPNX)" \
             "$APP"
-          echo "✅ Codesign complete, verifying..."
-          codesign --verify --deep --strict --verbose=2 "$APP" || (spctl -a -vv "$APP" || true)
+          echo "✅ Verify:"
+          codesign --verify --deep --strict --verbose=2 "$APP" || true
 
       - name: Zip app for notarization
         env:
