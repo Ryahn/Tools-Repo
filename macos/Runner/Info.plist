@@ -28,5 +28,19 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<!-- URL Scheme for OAuth deep links -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.ryahn.rule7app</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>rule7</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

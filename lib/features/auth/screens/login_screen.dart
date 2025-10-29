@@ -38,7 +38,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
       // Open browser with authorize URL
       final uri = Uri.parse(authorizeUrl);
-      if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      if (!await launchUrl(uri, mode: LaunchMode.platformDefault)) {
         throw Exception('Could not launch browser');
       }
 
