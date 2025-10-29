@@ -36,8 +36,7 @@ jobs:
           -DestinationPath "rule7_app-windows.zip" -Force
 
       - name: Setup Inno Setup
-        run: |
-          choco install innosetup -y --no-progress
+        run: choco install innosetup -y --no-progress
 
       - name: Create Inno Setup script
         run: >
@@ -67,12 +66,10 @@ jobs:
           [Tasks]
           Name: "desktopicon"; Description: "Create a desktop icon"; GroupDescription: "Additional icons:"
           "@
-
           $scriptContent | Out-File -FilePath "installer.iss" -Encoding UTF8
 
       - name: Build installer
         run: |
-          # Try multiple possible paths for Inno Setup
           $possiblePaths = @(
             "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
             "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
@@ -80,20 +77,10 @@ jobs:
           )
           $innosetupPath = $null
           foreach ($path in $possiblePaths) {
-            if (Test-Path $path) {
-              $innosetupPath = $path
-              break
-            }
+            if (Test-Path $path) { $innosetupPath = $path; break }
           }
-          if (!$innosetupPath) {
-            # Try to find it in PATH
-            $innosetupPath = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
-          }
-          if (!$innosetupPath) {
-            Write-Error "Inno Setup compiler (ISCC.exe) not found"
-            exit 1
-          }
-          Write-Host "Using Inno Setup at: $innosetupPath"
+          if (!$innosetupPath) { $innosetupPath = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source }
+          if (!$innosetupPath) { Write-Error "Inno Setup compiler (ISCC.exe) not found"; exit 1 }
           & $innosetupPath installer.iss
 
       - name: Upload Windows artifacts
@@ -108,6 +95,14 @@ jobs:
   build-macos:
     name: Build macOS
     runs-on: macos-latest
+    # Map secrets -> env so we can use env.* in if:
+    env:
+      CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+      CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+      AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+      AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -125,11 +120,7 @@ jobs:
           cd ..
 
       - name: Import Developer ID cert
-        if: secrets.MACOS_CERTIFICATE_BASE64
-        env:
-          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        if: env.CERTIFICATE_BASE64
         run: |
           set -e
           CERT=$RUNNER_TEMP/cert.p12
@@ -159,7 +150,6 @@ jobs:
 
       - name: Build macOS (unsigned; flags also set in AppInfo.xcconfig)
         run: |
-          # Double-disable signing at runtime too
           export CODE_SIGNING_ALLOWED=NO
           export CODE_SIGNING_REQUIRED=NO
           export CODE_SIGN_IDENTITY=-
@@ -168,7 +158,7 @@ jobs:
             --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
 
       - name: Post-build codesign (Developer ID)
-        if: success() && secrets.MACOS_CERTIFICATE_BASE64
+        if: success() && env.CERTIFICATE_BASE64
         run: |
           APP="build/macos/Build/Products/Release/rule7_app.app"
           codesign --force --deep --options runtime \
@@ -178,19 +168,19 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$APP" || true
 
       - name: Notarize (if API creds present)
-        if: success() && secrets.MACOS_CERTIFICATE_BASE64 && secrets.AC_API_KEY_ID && secrets.AC_API_ISSUER_ID && secrets.AC_API_KEY_P8
+        if: success() && env.CERTIFICATE_BASE64 && env.AC_API_KEY_ID && env.AC_API_ISSUER_ID && env.AC_API_KEY_P8
         run: |
           APP="build/macos/Build/Products/Release/rule7_app.app"
           ZIP="build/macos/rule7_app-macos.zip"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
 
           KEY="$RUNNER_TEMP/ac_api_key.p8"
-          echo "${{ secrets.AC_API_KEY_P8 }}" | base64 --decode > "$KEY"
+          echo "$AC_API_KEY_P8" | base64 --decode > "$KEY"
 
           xcrun notarytool submit "$ZIP" \
             --key "$KEY" \
-            --key-id "${{ secrets.AC_API_KEY_ID }}" \
-            --issuer "${{ secrets.AC_API_ISSUER_ID }}" \
+            --key-id "$AC_API_KEY_ID" \
+            --issuer "$AC_API_ISSUER_ID" \
             --wait
 
           xcrun stapler staple "$APP"
@@ -262,19 +252,15 @@ jobs:
           mkdir -p $APPDIR/usr/share/applications
           mkdir -p $APPDIR/usr/share/icons/hicolor/256x256/apps
 
-          # Copy Flutter bundle
           cp -R "$BUNDLE"/* "$APPDIR/usr/bin/"
 
-          # Minimal AppRun to point to your binary
           cat > $APPDIR/AppRun << 'EOF'
           #!/usr/bin/env bash
           HERE="$(dirname "$(readlink -f "$0")")"
           exec "$HERE/usr/bin/rule7_app" "$@"
           EOF
-
           chmod +x $APPDIR/AppRun
 
-          # Desktop file
           cat > $APPDIR/$APP.desktop << 'EOF'
           [Desktop Entry]
           Type=Application
@@ -287,7 +273,6 @@ jobs:
 
           cp $APPDIR/$APP.desktop $APPDIR/usr/share/applications/
 
-          # Icon
           if [ -f "linux/runner/resources/app_icon.png" ]; then
             cp linux/runner/resources/app_icon.png $APPDIR/usr/share/icons/hicolor/256x256/apps/rule7.png
             cp linux/runner/resources/app_icon.png $APPDIR/rule7.png
@@ -296,7 +281,6 @@ jobs:
             convert -size 256x256 xc:#111111 $APPDIR/rule7.png || true
           fi
 
-          # Ensure main binary is executable
           chmod +x $APPDIR/usr/bin/rule7_app
 
       - name: Build AppImage (no FUSE)
@@ -350,8 +334,7 @@ jobs:
             --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
 
       - name: Rename APK
-        run: |
-          cp build/app/outputs/flutter-apk/app-release.apk rule7_app-android.apk
+        run: cp build/app/outputs/flutter-apk/app-release.apk rule7_app-android.apk
 
       - name: Upload Android artifact
         uses: softprops/action-gh-release@v2
