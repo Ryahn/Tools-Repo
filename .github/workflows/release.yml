@@ -116,11 +116,14 @@ jobs:
           flutter-version: '3.35.7'
           channel: 'stable'
 
-      - name: Build macOS (always unsigned; we sign later)
+      - name: Build macOS (always unsigned; we sign after)
         run: |
           flutter pub get
           cd macos && pod install --repo-update && cd ..
-          flutter build macos --release --no-codesign \
+          export CODE_SIGNING_ALLOWED=NO
+          export CODE_SIGNING_REQUIRED=NO
+          export CODE_SIGN_IDENTITY=-
+          flutter build macos --release \
             --dart-define=API_BASE_URL=https://tools.zonies.xyz/api/mobile/v1 \
             --dart-define=WEB_BASE_URL=https://tools.zonies.xyz
 
